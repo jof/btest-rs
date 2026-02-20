@@ -1,0 +1,136 @@
+.\" btest-rs - MikroTik bandwidth-test protocol server
+.TH BTEST-RS 1 "February 2026" "btest-rs 0.1.0" "User Commands"
+.SH NAME
+btest-rs \- high-performance MikroTik bandwidth-test (btest) protocol server
+.SH SYNOPSIS
+.B btest-rs
+.RB [ \-l | \-\-listen
+.IR ADDR ]
+.RB [ \-\-udp\-port\-start
+.IR PORT ]
+.RB [ \-\-max\-sessions
+.IR N ]
+.SH DESCRIPTION
+.B btest-rs
+implements the MikroTik
+.B /tool bandwidth\-test
+server protocol, allowing MikroTik RouterOS devices to run bandwidth tests
+against a Linux host.
+.PP
+It supports TCP and UDP modes, all test directions (transmit, receive, both),
+and multi-connection TCP tests. The server is built on tokio for async I/O
+and high concurrency.
+.SH OPTIONS
+.TP
+.BR \-l ", " \-\-listen " " \fIADDR\fR
+Listen address and port.
+Default:
+.BR 0.0.0.0:2000 .
+.TP
+.B \-\-udp\-port\-start " " \fIPORT\fR
+Starting UDP port number for dynamic allocation during UDP tests.
+Each UDP test session allocates a port starting from this value.
+Default:
+.BR 2000 .
+.TP
+.B \-\-max\-sessions " " \fIN\fR
+Maximum number of concurrent test sessions.
+Connections beyond this limit are rejected.
+Default:
+.BR 100 .
+.TP
+.BR \-h ", " \-\-help
+Print help information.
+.TP
+.BR \-V ", " \-\-version
+Print version information.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Controls log verbosity via the
+.B tracing\-subscriber
+EnvFilter. Set to
+.B debug
+for verbose protocol-level logging, or
+.B info
+(the default) for connection summaries.
+.SH PROTOCOL
+The MikroTik bandwidth-test protocol operates on TCP port 2000.
+.SS Handshake
+.IP 1. 4
+Server sends a 4-byte hello:
+.BR 01:00:00:00 .
+.IP 2. 4
+Client sends a 16-byte command structure specifying the test parameters.
+.IP 3. 4
+Server responds with a 4-byte confirm. For multi-connection mode, bytes 2\-3
+contain a session token that secondary connections use to join the session.
+.SS TCP Mode
+Data flows on the same TCP connection used for the handshake.
+Stats messages (12 bytes, type
+.BR 0x07 )
+are exchanged approximately every second on the control channel.
+.SS UDP Mode
+After the handshake, the server sends a 2-byte big-endian port number over
+the TCP control channel. The server binds a UDP socket on that port; the
+client sends/receives on
+.IR port " + 256."
+Data packets carry a 4-byte big-endian sequence number followed by payload.
+Stats continue to be exchanged on the TCP control channel.
+.SH EXAMPLES
+Start the server with default settings:
+.PP
+.RS
+.nf
+btest-rs
+.fi
+.RE
+.PP
+Listen on a specific address and port:
+.PP
+.RS
+.nf
+btest-rs --listen 10.0.0.1:2000
+.fi
+.RE
+.PP
+Run with debug logging:
+.PP
+.RS
+.nf
+RUST_LOG=debug btest-rs
+.fi
+.RE
+.PP
+From a MikroTik device, run a TCP receive test:
+.PP
+.RS
+.nf
+/tool bandwidth-test 10.0.0.1 protocol=tcp direction=receive duration=10s
+.fi
+.RE
+.PP
+Run a UDP receive test with 1500-byte packets:
+.PP
+.RS
+.nf
+/tool bandwidth-test 10.0.0.1 protocol=udp direction=receive \e
+    duration=10s remote-udp-tx-size=1500
+.fi
+.RE
+.SH SECURITY
+.B btest-rs
+does not currently implement authentication. The MikroTik btest protocol
+supports two authentication mechanisms (old MD5 challenge-response and
+newer EC-SRP5), neither of which is implemented yet. Run the server only
+on trusted networks or behind a firewall.
+.SH BUGS
+Report bugs at:
+.UR https://github.com/jof/btest-rs/issues
+.UE
+.SH AUTHORS
+Jonathan Lassoff
+.SH LICENSE
+BSD 2-Clause. See the LICENSE file in the source distribution.
+.SH SEE ALSO
+.BR iperf3 (1)
