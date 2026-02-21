@@ -22,6 +22,21 @@ cargo build --release
 ./target/release/btest-rs --listen 0.0.0.0:2000
 ```
 
+## 📦 Installation
+
+Grab a prebuilt binary from [GitHub Releases](https://github.com/jof/btest-rs/releases)
+and you're off to the races:
+
+```bash
+curl -sL https://github.com/jof/btest-rs/releases/latest/download/btest-rs-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+  | sudo tar xz -C /usr/local/bin --strip-components=1 btest-rs-v0.1.0-x86_64-unknown-linux-gnu/btest-rs
+sudo cp btest-rs.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now btest-rs
+```
+
+A sample `btest-rs.service` systemd unit is included in the repo. Tweak it to taste. 🧑‍🍳
+
 Then from a MikroTik device, let 'er rip:
 ```
 /tool bandwidth-test <server-ip> protocol=tcp direction=receive duration=10s
@@ -86,7 +101,7 @@ and the [btest-opensource](https://github.com/samm-git/btest-opensource) project
 
 - 🔐 Authentication (old MD5 challenge-response or new EC-SRP5)
 - 🐌 Rate limiting (`remote-tx-speed` / `local-tx-speed`)
-- 📦 Systemd service unit / packaging
+- 📦 ~~Systemd service unit / packaging~~ — shipped! 🎁
 
 PRs welcome! Or just open an issue and yell about it. 🎉
 
