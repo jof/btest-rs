@@ -1,0 +1,14 @@
+[Unit]
+Description=btest-rs MikroTik bandwidth-test server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/btest-rs --listen 0.0.0.0:2000 --udp-port-start 2000 --max-sessions 100
+Restart=always
+RestartSec=5
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
