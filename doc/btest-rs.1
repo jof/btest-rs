@@ -10,6 +10,10 @@ btest-rs \- high-performance MikroTik bandwidth-test (btest) protocol server
 .IR PORT ]
 .RB [ \-\-max\-sessions
 .IR N ]
+.RB [ \-\-max\-test\-duration
+.IR SECS ]
+.RB [ \-\-control\-timeout
+.IR SECS ]
 .SH DESCRIPTION
 .B btest-rs
 implements the MikroTik
@@ -38,6 +42,21 @@ Maximum number of concurrent test sessions.
 Connections beyond this limit are rejected.
 Default:
 .BR 100 .
+.TP
+.B \-\-max\-test\-duration " " \fISECS\fR
+Hard maximum test duration in seconds. Sessions are unconditionally
+terminated after this period regardless of client activity.
+Default:
+.BR 300
+(5 minutes).
+.TP
+.B \-\-control\-timeout " " \fISECS\fR
+Idle timeout in seconds for the TCP control channel. If no data
+(stats messages) is received from the client within this period,
+the session is terminated. This prevents zombie UDP streams when
+a client disappears without cleanly closing the TCP connection.
+Default:
+.BR 30 .
 .TP
 .BR \-h ", " \-\-help
 Print help information.
@@ -124,6 +143,16 @@ does not currently implement authentication. The MikroTik btest protocol
 supports two authentication mechanisms (old MD5 challenge-response and
 newer EC-SRP5), neither of which is implemented yet. Run the server only
 on trusted networks or behind a firewall.
+.PP
+To mitigate abuse, the server enforces a hard maximum test duration
+.RB ( \-\-max\-test\-duration )
+and an idle timeout on the TCP control channel
+.RB ( \-\-control\-timeout ).
+The idle timeout detects clients that disappear without closing the
+TCP connection, preventing the server from sending UDP data indefinitely.
+The session limit
+.RB ( \-\-max\-sessions )
+bounds total concurrent resource usage.
 .SH BUGS
 Report bugs at:
 .UR https://github.com/jof/btest-rs/issues

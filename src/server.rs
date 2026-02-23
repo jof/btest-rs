@@ -17,6 +17,11 @@ pub struct ServerConfig {
     pub listen_addr: SocketAddr,
     pub udp_port_start: u16,
     pub max_sessions: u32,
+    /// Hard maximum test duration. Sessions are killed after this.
+    pub max_test_duration: Duration,
+    /// Idle timeout on the TCP control channel. If no data is received
+    /// from the client within this period, the session is terminated.
+    pub control_timeout: Duration,
 }
 
 impl Default for ServerConfig {
@@ -25,6 +30,8 @@ impl Default for ServerConfig {
             listen_addr: SocketAddr::from(([0, 0, 0, 0], BTEST_PORT)),
             udp_port_start: 2000,
             max_sessions: 100,
+            max_test_duration: Duration::from_secs(300),
+            control_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -111,8 +118,9 @@ async fn handle_connection(
     debug!(%peer, "Sent confirm");
 
     // Step 4: Run the test based on protocol
+    let config = &state.config;
     match cmd.protocol {
-        Protocol::Tcp => handle_tcp_test(stream, peer, &cmd).await,
+        Protocol::Tcp => handle_tcp_test(stream, peer, &cmd, config).await,
         Protocol::Udp => handle_udp_test(stream, peer, &cmd, state).await,
     }
 }
@@ -121,8 +129,9 @@ async fn handle_tcp_test(
     stream: TcpStream,
     peer: SocketAddr,
     cmd: &Command,
+    config: &ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!(%peer, "Starting TCP bandwidth test");
+    info!(%peer, max_duration_secs = config.max_test_duration.as_secs(), "Starting TCP bandwidth test");
 
     let (mut reader, mut writer) = stream.into_split();
     let recv_bytes = Arc::new(AtomicU64::new(0));
@@ -139,6 +148,15 @@ async fn handle_tcp_test(
     let recv_bytes_tx = Arc::clone(&recv_bytes);
     let shutdown_rx = Arc::clone(&shutdown);
     let shutdown_tx = Arc::clone(&shutdown);
+
+    // Session deadline — hard cap on test duration
+    let deadline = time::sleep(config.max_test_duration);
+    let shutdown_deadline = Arc::clone(&shutdown);
+    let deadline_handle = tokio::spawn(async move {
+        deadline.await;
+        warn!(%peer, "Session deadline reached, terminating");
+        shutdown_deadline.notify_waiters();
+    });
 
     // Receiver task: reads data from client, counts bytes, watches for stats
     let recv_handle = tokio::spawn(async move {
@@ -197,6 +215,7 @@ async fn handle_tcp_test(
     });
 
     let _ = tokio::join!(recv_handle, send_handle);
+    deadline_handle.abort();
     info!(%peer, "TCP test complete");
     Ok(())
 }
@@ -207,11 +226,14 @@ async fn handle_udp_test(
     cmd: &Command,
     state: &ServerState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let config = &state.config;
+
     // Allocate a UDP port and send it to the client (2 bytes, big-endian)
     let udp_port = state.allocate_udp_port();
     let port_buf = [(udp_port >> 8) as u8, (udp_port & 0xFF) as u8];
     stream.write_all(&port_buf).await?;
-    info!(%peer, udp_port, "Starting UDP bandwidth test");
+    info!(%peer, udp_port, max_duration_secs = config.max_test_duration.as_secs(),
+        control_timeout_secs = config.control_timeout.as_secs(), "Starting UDP bandwidth test");
 
     // Bind the UDP socket
     let udp_addr = SocketAddr::from(([0, 0, 0, 0], udp_port));
@@ -224,6 +246,15 @@ async fn handle_udp_test(
     let shutdown = Arc::new(Notify::new());
 
     let udp_socket = Arc::new(udp_socket);
+
+    // Session deadline — hard cap on test duration
+    let deadline = time::sleep(config.max_test_duration);
+    let shutdown_deadline = Arc::clone(&shutdown);
+    let deadline_handle = tokio::spawn(async move {
+        deadline.await;
+        warn!(%peer, "Session deadline reached, terminating");
+        shutdown_deadline.notify_waiters();
+    });
 
     // UDP receiver task
     let udp_recv = Arc::clone(&udp_socket);
@@ -323,24 +354,34 @@ async fn handle_udp_test(
         }
     });
 
-    // Control channel reader (receives stats from client, detects disconnect)
+    // Control channel reader with idle timeout.
+    // If the client stops sending stats for control_timeout, we assume it's gone.
+    let control_timeout = config.control_timeout;
     let shutdown_ctrl_rx = Arc::clone(&shutdown);
     let ctrl_recv_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
-                result = ctrl_reader.read(&mut ctrl_buf) => {
+                result = tokio::time::timeout(control_timeout, ctrl_reader.read(&mut ctrl_buf)) => {
                     match result {
-                        Ok(0) | Err(_) => {
+                        Ok(Ok(0) | Err(_)) => {
+                            // Clean disconnect or read error
                             shutdown_ctrl_rx.notify_waiters();
                             break;
                         }
-                        Ok(n) => {
+                        Ok(Ok(n)) => {
                             // Parse incoming stats from client (12-byte messages starting with 0x07)
                             if n >= 12 && ctrl_buf[0] == MSG_STAT {
                                 if let Some(remote_stat) = Stats::parse(ctrl_buf[..12].try_into().unwrap()) {
                                     debug!(seq = remote_stat.seq, bytes = remote_stat.recv_bytes, "Remote stats");
                                 }
                             }
+                        }
+                        Err(_) => {
+                            // Timeout — client went silent
+                            warn!(%peer, timeout_secs = control_timeout.as_secs(),
+                                "Control channel idle timeout, terminating session");
+                            shutdown_ctrl_rx.notify_waiters();
+                            break;
                         }
                     }
                 }
@@ -354,6 +395,7 @@ async fn handle_udp_test(
     if let Some(h) = send_handle {
         let _ = h.await;
     }
+    deadline_handle.abort();
 
     info!(%peer, "UDP test complete");
     Ok(())

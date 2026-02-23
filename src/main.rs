@@ -1,8 +1,10 @@
 mod protocol;
 mod server;
 
-use clap::Parser;
 use std::net::SocketAddr;
+use std::time::Duration;
+
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use crate::protocol::BTEST_PORT;
@@ -25,6 +27,16 @@ struct Args {
     /// Maximum concurrent sessions
     #[arg(long, default_value_t = 100)]
     max_sessions: u32,
+
+    /// Maximum test duration in seconds (hard cap per session)
+    #[arg(long, default_value_t = 300)]
+    max_test_duration: u64,
+
+    /// Idle timeout in seconds for the TCP control channel.
+    /// If no data is received from the client within this period,
+    /// the session is terminated. Prevents zombie UDP streams.
+    #[arg(long, default_value_t = 30)]
+    control_timeout: u64,
 }
 
 #[tokio::main]
@@ -43,6 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listen_addr,
         udp_port_start: args.udp_port_start,
         max_sessions: args.max_sessions,
+        max_test_duration: Duration::from_secs(args.max_test_duration),
+        control_timeout: Duration::from_secs(args.control_timeout),
     };
 
     run_server(config).await

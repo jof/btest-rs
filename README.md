@@ -49,9 +49,11 @@ Then from a MikroTik device, let 'er rip:
 btest-rs [OPTIONS]
 
 Options:
-  -l, --listen <ADDR>          Listen address [default: 0.0.0.0:2000]
-      --udp-port-start <PORT>  Starting UDP port for allocation [default: 2000]
-      --max-sessions <N>       Maximum concurrent sessions [default: 100]
+  -l, --listen <ADDR>              Listen address [default: 0.0.0.0:2000]
+      --udp-port-start <PORT>      Starting UDP port for allocation [default: 2000]
+      --max-sessions <N>           Maximum concurrent sessions [default: 100]
+      --max-test-duration <SECS>   Hard cap on test duration per session [default: 300]
+      --control-timeout <SECS>     Idle timeout on TCP control channel [default: 30]
 ```
 
 Set `RUST_LOG=debug` for verbose protocol logging. 🔍
