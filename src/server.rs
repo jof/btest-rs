@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +8,33 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Notify;
 use tokio::time;
 use tracing::{debug, info, warn};
+
+/// Cooperative shutdown signal. Combines an `AtomicBool` flag (polled by
+/// tight loops) with a `Notify` (to wake tasks blocked on I/O or sleep).
+#[derive(Default)]
+struct Shutdown {
+    flag: AtomicBool,
+    wake: Notify,
+}
+
+impl Shutdown {
+    fn trigger(&self) {
+        self.flag.store(true, Ordering::Release);
+        self.wake.notify_waiters();
+    }
+
+    fn is_triggered(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+
+    async fn notified(&self) {
+        // Fast path: already triggered
+        if self.is_triggered() {
+            return;
+        }
+        self.wake.notified().await;
+    }
+}
 
 use crate::protocol::*;
 
@@ -135,7 +162,7 @@ async fn handle_tcp_test(
 
     let (mut reader, mut writer) = stream.into_split();
     let recv_bytes = Arc::new(AtomicU64::new(0));
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = Arc::new(Shutdown::default());
 
     // Determine what we need to do based on direction
     // direction is from the CLIENT's perspective:
@@ -155,7 +182,7 @@ async fn handle_tcp_test(
     let deadline_handle = tokio::spawn(async move {
         deadline.await;
         warn!(%peer, "Session deadline reached, terminating");
-        shutdown_deadline.notify_waiters();
+        shutdown_deadline.trigger();
     });
 
     // Receiver task: reads data from client, counts bytes, watches for stats
@@ -187,6 +214,9 @@ async fn handle_tcp_test(
         data_buf[0] = 0x00; // data marker
 
         loop {
+            if shutdown_tx.is_triggered() {
+                break;
+            }
             tokio::select! {
                 _ = stat_interval.tick() => {
                     seq += 1;
@@ -203,7 +233,7 @@ async fn handle_tcp_test(
                     if server_should_send {
                         // Send data as fast as possible
                         if writer.write_all(&data_buf[..tx_size.max(1)]).await.is_err() {
-                            shutdown_tx.notify_waiters();
+                            shutdown_tx.trigger();
                         }
                     } else {
                         // If we're only receiving, just wait for stats interval
@@ -243,7 +273,7 @@ async fn handle_udp_test(
     let tx_size = cmd.tx_size as usize;
 
     let recv_bytes = Arc::new(AtomicU64::new(0));
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = Arc::new(Shutdown::default());
 
     let udp_socket = Arc::new(udp_socket);
 
@@ -253,7 +283,7 @@ async fn handle_udp_test(
     let deadline_handle = tokio::spawn(async move {
         deadline.await;
         warn!(%peer, "Session deadline reached, terminating");
-        shutdown_deadline.notify_waiters();
+        shutdown_deadline.trigger();
     });
 
     // UDP receiver task
@@ -302,6 +332,12 @@ async fn handle_udp_test(
             let mut seq: u32 = 1;
 
             loop {
+                // Check shutdown flag on every iteration — this is the
+                // critical fix for the zombie UDP sender bug.
+                if shutdown_udp_tx.is_triggered() {
+                    break;
+                }
+
                 // Write sequence number (big-endian) in first 4 bytes
                 buf[0] = (seq >> 24) as u8;
                 buf[1] = (seq >> 16) as u8;
@@ -309,13 +345,8 @@ async fn handle_udp_test(
                 buf[3] = seq as u8;
                 seq = seq.wrapping_add(1);
 
-                tokio::select! {
-                    result = udp_send.send_to(&buf, client_addr) => {
-                        if result.is_err() {
-                            break;
-                        }
-                    }
-                    _ = shutdown_udp_tx.notified() => break,
+                if udp_send.send_to(&buf, client_addr).await.is_err() {
+                    break;
                 }
                 // Small yield to prevent busy-spinning at low speeds
                 tokio::task::yield_now().await;
@@ -345,7 +376,7 @@ async fn handle_udp_test(
                     let stat = Stats { seq, recv_bytes: bytes };
                     let stat_bytes = stat.serialize();
                     if ctrl_writer.write_all(&stat_bytes).await.is_err() {
-                        shutdown_ctrl.notify_waiters();
+                        shutdown_ctrl.trigger();
                         break;
                     }
                 }
@@ -365,7 +396,7 @@ async fn handle_udp_test(
                     match result {
                         Ok(Ok(0) | Err(_)) => {
                             // Clean disconnect or read error
-                            shutdown_ctrl_rx.notify_waiters();
+                            shutdown_ctrl_rx.trigger();
                             break;
                         }
                         Ok(Ok(n)) => {
@@ -380,7 +411,7 @@ async fn handle_udp_test(
                             // Timeout — client went silent
                             warn!(%peer, timeout_secs = control_timeout.as_secs(),
                                 "Control channel idle timeout, terminating session");
-                            shutdown_ctrl_rx.notify_waiters();
+                            shutdown_ctrl_rx.trigger();
                             break;
                         }
                     }

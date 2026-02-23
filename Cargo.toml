@@ -18,6 +18,8 @@ cast_lossless = "allow"             # u8/u16 -> u32 casts are clear enough
 ignored_unit_patterns = "allow"     # tokio::select! generates these
 too_many_lines = "allow"            # Async server handlers are naturally long
 wildcard_imports = "allow"          # Used for protocol::*
+must_use_candidate = "allow"        # Too noisy for parse/serialize helpers
+missing_errors_doc = "allow"        # Server error types are self-evident
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

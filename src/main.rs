@@ -1,14 +1,11 @@
-mod protocol;
-mod server;
-
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use crate::protocol::BTEST_PORT;
-use crate::server::{run_server, ServerConfig};
+use btest_rs::protocol::BTEST_PORT;
+use btest_rs::server::{run_server, ServerConfig};
 
 #[derive(Parser, Debug)]
 #[command(
