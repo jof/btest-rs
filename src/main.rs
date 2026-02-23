@@ -13,6 +13,7 @@ use crate::server::{run_server, ServerConfig};
 #[derive(Parser, Debug)]
 #[command(
     name = "btest-rs",
+    version,
     about = "High-performance MikroTik bandwidth-test protocol server"
 )]
 struct Args {
